@@ -1,12 +1,9 @@
-# Continuous Batching Engine (minimal, pure Python)
+# Continuous Batching Engine
 
 A from-scratch, single-process model of the core mechanics behind
 modern LLM serving engines (vLLM, SGLang, TensorRT-LLM): **paged KV
 cache allocation**, a **continuous batching scheduler**, and
-**chunked prefill**. No GPU, no model weights, no external
-dependencies — just the standard library, so the scheduling and
-memory logic is the whole point and nothing is hidden behind a
-framework.
+**chunked prefill**. 
 
 Since there's no real model here, a `MockModelRunner` stands in for
 the forward pass (see "Simplifications" below). Everything about
@@ -80,45 +77,3 @@ running request (`_preempt` in `scheduler.py`), freeing its blocks.
 The victim keeps its already-generated tokens but recomputes its KV
 cache from scratch once it's re-admitted ("recompute" preemption —
 the simpler alternative to swapping to CPU memory).
-
-## Simplifications (deliberate, worth being able to explain)
-
-- **No real model.** `MockModelRunner` fakes the forward pass. The
-  resume bullet is about memory/scheduling mechanics, not about
-  training or loading weights, so a real model would add dependency
-  weight without adding to what the project demonstrates.
-- **Single process, not actually distributed.** "Distributed" serving
-  in production is about routing requests across multiple
-  model-replica workers and sharding KV cache across GPUs/nodes. This
-  project models the per-worker scheduling loop that *each* node in a
-  distributed setup would run — the natural next step would be adding
-  a router process that fans requests out to several `LLMEngine`
-  instances.
-- **No copy-on-write block sharing.** Real engines share prompt blocks
-  across requests doing beam search or prefix caching (ref-counted
-  blocks). `Block.ref_count` exists but is always 1 here — there's
-  only ever one owner per block.
-- **Prefill's last chunk doesn't fuse with the first decode token.**
-  Real engines produce the first output token as part of the same
-  forward pass that finishes the prompt. Here that's one extra,
-  separate step for simplicity — cheap to fix, not worth the
-  complexity for what this demonstrates.
-
-## Talking points if asked about this in an interview
-
-- *"Why paged blocks instead of one contiguous buffer per request?"*
-  Contiguous buffers sized for the worst case waste memory on every
-  request that doesn't hit its max length, and freeing/reallocating
-  variable-size buffers fragments memory over time. Fixed-size blocks
-  from a shared free list sidestep both problems — same idea as OS
-  virtual memory paging.
-- *"Why prioritize decode over prefill in the scheduler?"* Decode
-  steps are cheap (1 token) and serve users who are already mid-stream
-  getting output; starving them to prefill a new request creates
-  visible per-token latency spikes. Chunking prefill instead of
-  blocking on it is what keeps decode latency smooth.
-- *"What's the actual cost of preemption?"* Whatever work was spent on
-  the victim's KV cache is thrown away and redone from scratch next
-  time it's scheduled — so preemption trades memory pressure for
-  wasted compute. That's exactly the kind of trade-off a real
-  scheduler's admission policy has to be tuned around.
